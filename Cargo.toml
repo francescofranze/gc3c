@@ -1,0 +1,6 @@
+[package]
+name = "gc3c"
+version = "0.1.0"
+authors = ["francesco franze <francesco.franze@gmail.com>"]
+
+[dependencies]

@@ -280,10 +280,7 @@ impl InGcEnv {
         if cfg!(feature="gc_debug") {    
             println!("swap white and black");
         }
-         
-        let tmp = self.whites.clone();
-        self.whites = self.blacks.clone();
-        self.blacks = tmp;
+        mem::swap::<&mut Vec<Gc<Mark>>>(&mut (self.blacks).as_mut(), &mut (self.whites).as_mut());
         
         self.white_is_black = !self.white_is_black;
         

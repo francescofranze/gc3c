@@ -280,8 +280,9 @@ impl InGcEnv {
         if cfg!(feature="gc_debug") {    
             println!("swap white and black");
         }
-        mem::swap::<&mut Vec<Gc<Mark>>>(&mut (self.blacks).as_mut(), &mut (self.whites).as_mut());
-        
+        let oldblacks = mem::replace(&mut (self.blacks), vec![]);
+        let oldwhites = mem::replace(&mut (self.whites), oldblacks);
+        mem::replace(&mut (self.blacks), oldwhites);
         self.white_is_black = !self.white_is_black;
         
     }

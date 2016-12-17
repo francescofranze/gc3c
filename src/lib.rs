@@ -11,7 +11,6 @@ use std::cell::RefCell;
 use std::cell::RefMut;
 use std::cell::Ref;
 use std::cmp::PartialEq;
-use std::fmt;
 use std::ptr;
 use std::marker::Sized;
 use std::mem;
@@ -19,6 +18,9 @@ use std::mem;
 extern crate alloc;
 
 use alloc::heap;
+
+#[cfg(feature="gc_debug")]
+use std::fmt;
 
 #[derive(Eq, PartialEq, Copy, Clone, Debug)]
 enum GcColor {
@@ -29,10 +31,15 @@ enum GcColor {
 }
 
 
+#[cfg(feature="gc_debug")]
 pub trait Mark: fmt::Debug {
     fn mark(&self, &mut InGcEnv)   ; 
 }
 
+#[cfg(not(feature="gc_debug"))]
+pub trait Mark {
+    fn mark(&self, &mut InGcEnv)   ; 
+}
 
 
 impl< T: Mark+?Sized + Unsize<U>, U: Mark+?Sized> CoerceUnsized<Gc< U>> for Gc< T> {}
@@ -73,6 +80,8 @@ impl< T: Mark+?Sized>  Gc< T> {
         }
     }
     fn forget(&self)  {
+        #[cfg(feature="gc_debug")]
+        println!("forgetting {:?}", self);
         unsafe {
             (**self.ptr).valid = false;
             //let p: *mut InGc<T> = self.ptr as *mut InGc<T>; 
@@ -156,7 +165,7 @@ impl<T: Mark+?Sized> Drop for Gc<T> {
 }
 */
 
-
+#[cfg(feature="gc_debug")]
 impl< T: Mark+?Sized> fmt::Debug for Gc< T> {
     fn fmt(&self,  f: &mut fmt::Formatter) -> fmt::Result {
             //write!(f, "{:?} {:?}", self.color(), self.borrow())
@@ -176,6 +185,7 @@ pub struct InGcEnv {
 
 impl InGcEnv {
 
+    #[cfg(feature="gc_debug")]
     fn col(&self, c: GcColor) -> &'static str {
         match c {
             GcColor::Unbound => { &"unbound" },
@@ -197,7 +207,7 @@ impl InGcEnv {
         }
     }
 
-   fn movec(&mut self, obj: Gc<Mark>, color: GcColor) {
+    fn movec(&mut self, obj: Gc<Mark>, color: GcColor) {
         if obj.color() != color {
             if obj.color() != GcColor::Unbound {
                 self.remove(&obj);
@@ -261,8 +271,9 @@ impl InGcEnv {
 
 
     fn swap_white_and_black(&mut self) {
-        
-        println!("swap white and black");
+        if cfg!(feature="gc_debug") {    
+            println!("swap white and black");
+        }
          
         let tmp = self.whites.clone();
         self.whites = self.blacks.clone();
@@ -274,13 +285,10 @@ impl InGcEnv {
 
     fn mark_1(&mut self, obj: Gc<Mark>) {
         let black = if self.white_is_black { GcColor::White} else { GcColor::Black };
-        //let white = if self.white_is_black { GcColor::Black} else { GcColor::White };
         self.movec(obj, black);
         obj.mark(self);
     }
     
-
-    //pub fn mark_grey<T: 'static+Mark>(&mut self, obj: Gc<T>) {
     fn mark_grey(&mut self, obj: Gc<Mark>) {
          match obj.color() {
             GcColor::Unbound => { unreachable!(); },
@@ -351,7 +359,9 @@ impl GcEnv {
         }
     }
     pub fn mark(&self, mut steps: u16) {
+        #[cfg(feature="gc_debug")]
         println!("mark");
+            
         let mut gc = self.inner.borrow_mut();
         while !gc.greys.is_empty() && steps > 0 {
             if let Some( obj) = gc.greys.pop() {
@@ -360,29 +370,35 @@ impl GcEnv {
                 steps = steps - 1;
             }
         }
+        #[cfg(feature="gc_debug")]
         println!("end mark");
     }
     pub fn sweep(&self) {
-        println!("sweep");
         let mut gc = self.inner.borrow_mut();
+#[cfg(feature="gc_debug")]
+         {    
+        println!("sweep");
         println!("{:?}",gc.roots);
         println!("w {:?}",gc.whites);
         println!("b {:?}",gc.blacks);
         println!("g {:?}",gc.greys);
+            }
         while let Some(obj) = gc.greys.pop() {
             obj.set_color(GcColor::Unbound);
             gc.mark_1(obj);
         }
 
         while let Some(ref obj) = gc.whites.pop() {
-            println!("forgetting {:?}", obj);
+            
             obj.set_color(GcColor::Unbound);
             obj.forget();
         }
         gc.swap_white_and_black();
         let mut it = Vec::<Gc<Mark>>::new();
         for obj in gc.roots.iter() {
+            #[cfg(feature="gc_debug")]
             println!("marking root {:?}", obj);
+            
             it.push(*obj);
         }
         for obj in it  {
@@ -394,6 +410,7 @@ impl GcEnv {
 
 impl Drop for GcEnv {
     fn drop(&mut self) {
+        #[cfg(feature="gc_debug")]
         println!("dropping GcEnv");
         
         let mut gc = self.inner.borrow_mut();
@@ -411,57 +428,3 @@ impl Drop for GcEnv {
         }
     }
 }
-
-
-
-/*
-#[derive(Debug)]
-enum ZCell {
-    Atom,
-    Compound(Gc<ZCell>, Gc<ZCell>),
-}
-
-impl Mark for ZCell {
-    fn mark(&self, gc: &mut InGcEnv) {
-        println!("marking {:?}", self);
-        if let &ZCell::Compound(ref head, ref tail) = self {
-            gc.mark_grey(head.clone());
-            gc.mark_grey(tail.clone());
-        }
-    }
-}
-
-impl Drop for ZCell {
-    fn drop(&mut self) {
-        println!("dropping {:?}", self);
-    }
-}
-
-
-#[macro_export]
-macro_rules! gc {
-    ($gc:expr, $expression:expr) => (
-        $gc.new_gc($expression)
-    )
-}
-
-
-
-
-
-fn main() {
-   let gcenv = GcEnv::new();
-   let zg2 = gc!(gcenv, ZCell::Atom);
-   
-   let zg3 = gc!(gcenv, ZCell::Atom);
-   let zg1 = gc!(gcenv, ZCell::Compound(zg2.clone(), zg3.clone()));
-   gcenv.add_root(zg1.clone());
-   gcenv.new_ref(zg1.clone(), zg2.clone());
-   gcenv.new_ref(zg1.clone(), zg3.clone());
-   gcenv.mark(100);
-   println!("sweep");
-   gcenv.sweep();
-   
-}
-
-*/

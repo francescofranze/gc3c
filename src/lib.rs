@@ -19,7 +19,6 @@ extern crate alloc;
 
 use alloc::heap;
 
-#[cfg(feature="gc_debug")]
 use std::fmt;
 
 #[derive(Eq, PartialEq, Copy, Clone, Debug)]
@@ -168,10 +167,17 @@ impl<T: Mark+?Sized> Drop for Gc<T> {
 #[cfg(feature="gc_debug")]
 impl< T: Mark+?Sized> fmt::Debug for Gc< T> {
     fn fmt(&self,  f: &mut fmt::Formatter) -> fmt::Result {
-            //write!(f, "{:?} {:?}", self.color(), self.borrow())
             write!(f, "{:?} {:?}", self.color(), self.borrow())
     }
 }
+
+#[cfg(not(feature="gc_debug"))]
+impl< T: fmt::Debug+Mark+?Sized> fmt::Debug for Gc< T> {
+    fn fmt(&self,  f: &mut fmt::Formatter) -> fmt::Result {
+            write!(f, "{:?}", self.borrow())
+    }
+}
+
 
 
 pub struct InGcEnv {

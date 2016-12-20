@@ -34,17 +34,17 @@ enum GcColor {
 }
 
 
-//#[cfg(feature="gc_debug")]
+#[cfg(feature="gc_debug")]
 pub trait Mark: fmt::Debug {
     fn mark(&self, &mut InGcEnv) { }
 }
 
-/*
+
 #[cfg(not(feature="gc_debug"))]
 pub trait Mark {
     fn mark(&self, &mut InGcEnv)  { } 
 }
-*/
+
 
 
 impl< T: Mark+?Sized + Unsize<U>, U: Mark+?Sized> CoerceUnsized<Gc< U>> for Gc< T> {}
@@ -173,13 +173,15 @@ impl< T: fmt::Debug+Mark+?Sized> fmt::Debug for Gc< T> {
 
 
 
+const MAX_WHITES: usize = 100;
 
 pub struct InGcEnv {
-    whites: Vec<Gc< Mark>>,
-    greys: Vec<Gc< Mark>>,
-    blacks: Vec<Gc< Mark>>,
-    roots: Vec<Gc< Mark>>,
+    whites: Vec<Gc<Mark>>,
+    greys: Vec<Gc<Mark>>,
+    blacks: Vec<Gc<Mark>>,
+    roots: Vec<Gc<Mark>>,
     white_is_black: bool,
+    auto: bool,
 }
 
 
@@ -304,16 +306,25 @@ impl InGcEnv {
             }
         }
     }
+    
+    fn auto_mark(&self) -> bool {
+        self.auto && self.whites.len() >= MAX_WHITES
+    }
+
+    fn auto_sweep(&self) -> bool {
+        self.auto && self.whites.len() >= MAX_WHITES
+    }
+
 }
 
 
 pub struct GcEnv {
-    inner: RefCell<InGcEnv>
+    inner: RefCell<InGcEnv>,
 }
 
 
 impl GcEnv {
-    pub fn new() -> GcEnv {
+    pub fn new(auto: bool) -> GcEnv {
         GcEnv {
             inner: RefCell::new(
                 InGcEnv {
@@ -322,6 +333,7 @@ impl GcEnv {
                     blacks:vec![] ,
                     roots: vec![],
                     white_is_black: false,
+                    auto: auto,
                 })
         }
     }
@@ -335,7 +347,22 @@ impl GcEnv {
         }
     }
 
+    pub fn rm_root(&self, obj: Gc<Mark>) {
+        let mut gc = self.inner.borrow_mut();
+        
+        if gc.roots.contains(&obj) {
+            let i = gc.roots.iter().position(|e| { *e==obj }).unwrap(); 
+            gc.blacks.remove(i);
+        }
+    }
+
     pub fn new_gc<T: 'static+Mark>(&self, obj: T) -> Gc<T> {
+        if self.inner.borrow().auto_mark() {
+            self.mark(MAX_WHITES);
+        }
+        if self.inner.borrow().auto_sweep() {
+            self.sweep();
+        }
         let gobj = Gc::<T>::new(obj, &self);
         let mut gc = self.inner.borrow_mut();
         gc.whites.push(gobj);
@@ -353,15 +380,18 @@ impl GcEnv {
                 gc.movec(o, GcColor::Grey);
             }
         } else {
-            println!("{:?}",o.color());
-            println!("{:?}",robj.color());
             if o.color() == GcColor::Black && robj.color() == GcColor::White {
                 gc.movec(o, GcColor::Grey);
             }
         }
     }
 
-    pub fn mark(&self, mut steps: u16) {
+    pub fn pause(&self, b: bool) {
+        let mut gc = self.inner.borrow_mut();
+        gc.auto = b;
+    }
+
+    pub fn mark(&self, mut steps: usize) {
         #[cfg(feature="gc_debug")]
         println!("mark");
             
@@ -410,11 +440,8 @@ impl GcEnv {
             gc.movec(obj, GcColor::Grey);
         }
     }
-}
 
-
-impl Drop for GcEnv {
-    fn drop(&mut self) {
+    fn finalize(&self) {
         #[cfg(feature="gc_debug")]
         println!("dropping GcEnv");
         
@@ -435,9 +462,58 @@ impl Drop for GcEnv {
 }
 
 
+impl Drop for GcEnv {
+    fn drop(&mut self) {
+    }
+}
+
+thread_local!(static _GC : GcEnv = GcEnv::new(true));
+
+pub mod gc {
+    use super::{Gc,Mark, _GC};
+
+    pub fn new_gc<T: 'static+Mark>(v: T) -> Gc<T> {
+        _GC.with(|gc| {
+            gc.new_gc(v)
+        }) 
+    }
+
+    pub fn new_ref(o: Gc<Mark>, r: Gc<Mark>) {
+        _GC.with(|gc| {
+            gc.new_ref(o, r);
+        });
+    }
+
+    pub fn pause(b: bool) {
+        _GC.with(|gc| {
+            gc.pause(b);
+        });
+    }
+
+    pub fn add_root(o: Gc<Mark>) {
+        _GC.with(|gc| {
+            gc.add_root(o);
+        });
+    }
+
+    pub fn rm_root(o: Gc<Mark>) {
+        _GC.with(|gc| {
+            gc.rm_root(o);
+        });
+    }
+
+    pub fn finalize() {
+        _GC.with(|gc| {
+            gc.finalize();
+        });
+    }
+}
+
+
 #[cfg(test)]
 mod tests {
-    use super::{GcEnv,InGcEnv,Gc,Mark, GcColor};
+    use super::{GcEnv,InGcEnv,Gc,Mark, GcColor, _GC, MAX_WHITES};
+    use super::gc;
     
     #[derive(Debug)]
     struct A { i: u8 }
@@ -450,7 +526,7 @@ mod tests {
     fn basic_test() {
         // initialize the garbage collector
         // gc is local so it has to be passed where it is needed
-        let gc = GcEnv::new();
+        let gc = GcEnv::new(false);
     
         let a = gc.new_gc(A { i: 1 });
     
@@ -512,7 +588,7 @@ mod tests {
 
     #[test]
     fn root_test() {
-        let gc = GcEnv::new();
+        let gc = GcEnv::new(false);
     
         let a = gc.new_gc(A { i: 1 });
 
@@ -523,11 +599,12 @@ mod tests {
         gc.sweep();
         // a is still alive
         assert_is_grey(&gc, a);
+        gc.finalize();
     }
 
     #[test]
     fn mark_test() {
-        let gc = GcEnv::new();
+        let gc = GcEnv::new(false);
     
         let a = gc.new_gc(A { i: 1 });
         let b = gc.new_gc(B { i: 1, a: a });
@@ -540,11 +617,12 @@ mod tests {
         // all is black
         assert_is_black(&gc, a);
         assert_is_black(&gc, b);
+        gc.finalize();
     }
 
     #[test]
     fn sweep_test() {
-        let gc = GcEnv::new();
+        let gc = GcEnv::new(false);
     
         let a = gc.new_gc(A { i: 1 });
         let b = gc.new_gc(B { i: 1, a: a });
@@ -557,11 +635,12 @@ mod tests {
         // all is alive 
         assert_is_white(&gc, a);
         assert_is_grey(&gc, b);
+        gc.finalize();
     }
 
     #[test]
     fn release_test() {
-        let gc = GcEnv::new();
+        let gc = GcEnv::new(false);
     
         let a = gc.new_gc(A { i: 1 });
 
@@ -573,11 +652,12 @@ mod tests {
         gc.sweep();
         // a is no more in gc
         assert_released(&gc, a);
+        gc.finalize();
     }
 
     #[test]
     fn write_barrier_test() {
-        let gc = GcEnv::new();
+        let gc = GcEnv::new(false);
         
         let a = gc.new_gc(A { i: 1 });
         let b = gc.new_gc(B { i: 1, a: a });
@@ -594,5 +674,56 @@ mod tests {
         gc.new_ref(b, c); 
         assert_is_grey(&gc, b);
         assert_is_white(&gc, c);
+        gc.finalize();
+    }
+
+    #[test]
+    fn thread_test() {
+        use std::thread;
+        let builder0 = thread::Builder::new().name("thread_test".into());
+
+        let a = gc::new_gc(A { i: 1});
+        a.borrow_mut().i = 1;
+        let t = builder0.spawn(|| {
+            let a = gc::new_gc(A { i: 1});
+            _GC.with(|gc| {
+                assert_is_white(gc, a);
+                assert_eq!(gc.inner.borrow().whites.len(), 1);
+            });
+            gc::finalize();
+            _GC.with(|gc| {
+                assert_eq!(gc.inner.borrow().whites.len(), 0);
+            });
+        }).unwrap();
+        t.join().unwrap();
+        _GC.with(|gc| {
+            println!("inz3 thread {:?}", thread::current());
+            assert_eq!(gc.inner.borrow().whites.len(), 1);
+        });
+        gc::finalize();
+        _GC.with(|gc| {
+            println!("inz3 thread {:?}", thread::current());
+            assert_eq!(gc.inner.borrow().whites.len(), 0);
+        });
+    }
+
+    #[test]
+    fn test_auto() {
+        use std::thread;
+        let builder0 = thread::Builder::new().name("test0".into());
+
+        let t = builder0.spawn(|| {
+            let mut v = Vec::<Gc<A>>::new();
+            for _ in 0..(MAX_WHITES+1) {
+                v.push(gc::new_gc(A { i: 0}));
+            }
+            // all sweeped out but 1
+            _GC.with(|gc| {
+                //assert_eq!(gc.inner.borrow().whites.len(), 0);
+                assert_eq!(gc.inner.borrow().whites.len(), 1);
+            });
+            gc::finalize();
+        }).unwrap();
+        t.join().unwrap();
     }
 }

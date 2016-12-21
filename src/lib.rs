@@ -161,7 +161,7 @@ impl< T: Mark+?Sized> fmt::Debug for Gc< T> {
             if (**self.ptr).valid {
                 write!(f, "{:?} {:?}", self.color(), self.borrow())
             } else {
-                write!(f, "printing <deallocated object>")
+                write!(f, "<deallocated object>")
             }
         }
     }

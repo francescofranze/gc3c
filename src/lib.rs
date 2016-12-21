@@ -26,6 +26,8 @@ use alloc::heap;
 
 use std::fmt;
 
+const GCVALID: u16 = 0xF123;
+
 #[derive(Eq, PartialEq, Copy, Clone, Debug)]
 enum GcColor {
         Unbound,
@@ -51,8 +53,8 @@ pub trait Mark {
 impl< T: Mark+?Sized + Unsize<U>, U: Mark+?Sized> CoerceUnsized<Gc< U>> for Gc< T> {}
 
 struct InGc<T: Mark+?Sized> {
+    valid: u16,
     color: GcColor,
-    valid: bool,
     content: RefCell<T>,
 }
 
@@ -85,7 +87,7 @@ impl< T: Mark+?Sized>  Gc< T> {
         #[cfg(feature="gc_debug")]
         println!("forgetting {:?}", self);
         unsafe {
-            (**self.ptr).valid = false;
+            (**self.ptr).valid = 0;
             ptr::drop_in_place(&mut (**self.ptr).content);
             heap::deallocate((*self.ptr) as *mut u8,
                               size_of_val(&**self.ptr),
@@ -110,8 +112,8 @@ impl< T: 'static+Mark> Gc< T> {
                     Box::into_raw(
                         Box::new(
                             InGc {
+                                valid: GCVALID,
                                 color: white,
-                                valid: true,
                                 content: RefCell::new(o), 
                             }
                         )))
@@ -126,17 +128,26 @@ impl< T: 'static+Mark> Gc< T> {
 impl< T: Mark+?Sized> Gc< T> {
     pub fn borrow(&self) -> Ref<T> {
         unsafe {
-            assert!((**self.ptr).valid);
+            assert!((**self.ptr).valid == GCVALID);
             (**self.ptr).content.borrow()
         }
     }    
     pub fn borrow_mut(& self) -> RefMut<T> {
         unsafe {
-            assert!((**self.ptr).valid);
+            assert!((**self.ptr).valid == GCVALID);
             (**self.ptr).content.borrow_mut()
         }
     }    
     
+    pub fn try_borrow(&self) -> Option<Ref<T>> {
+        unsafe {
+            if (**self.ptr).valid == GCVALID {
+                Some((**self.ptr).content.borrow())
+            } else {
+                None
+            }
+        }
+    }    
 }
 
 
@@ -158,7 +169,7 @@ impl< T: Mark+?Sized> PartialEq for Gc< T>  {
 impl< T: Mark+?Sized> fmt::Debug for Gc< T> {
     fn fmt(&self,  f: &mut fmt::Formatter) -> fmt::Result {
         unsafe {
-            if (**self.ptr).valid {
+            if (**self.ptr).valid == GCVALID {
                 write!(f, "{:?} {:?}", self.color(), self.borrow())
             } else {
                 write!(f, "<deallocated object>")

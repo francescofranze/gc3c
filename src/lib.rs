@@ -18,6 +18,7 @@ use std::cmp::PartialEq;
 use std::ptr;
 use std::marker::Sized;
 use std::mem;
+use std::mem::{size_of_val, align_of_val};
 
 extern crate alloc;
 
@@ -52,8 +53,6 @@ impl< T: Mark+?Sized + Unsize<U>, U: Mark+?Sized> CoerceUnsized<Gc< U>> for Gc< 
 struct InGc<T: Mark+?Sized> {
     color: GcColor,
     valid: bool,
-    size: usize,
-    align: usize,
     content: RefCell<T>,
 }
 
@@ -87,10 +86,10 @@ impl< T: Mark+?Sized>  Gc< T> {
         println!("forgetting {:?}", self);
         unsafe {
             (**self.ptr).valid = false;
-            ptr::drop_in_place(*self.ptr);
+            ptr::drop_in_place(&mut (**self.ptr).content);
             heap::deallocate((*self.ptr) as *mut u8,
-                             (**self.ptr).size,
-                             (**self.ptr).align);
+                              size_of_val(&**self.ptr),
+                              align_of_val(&**self.ptr));
         }
     }    
 
@@ -109,14 +108,13 @@ impl< T: 'static+Mark> Gc< T> {
                 ptr: 
                     Shared::new(
                     Box::into_raw(
-                    Box::new(
-                        InGc {
-                             color: white,
-                             valid: true,
-                             size: mem::size_of::<T>(),
-                             align: mem::align_of::<T>(),
-                             content: RefCell::new(o), 
-                        })))
+                        Box::new(
+                            InGc {
+                                color: white,
+                                valid: true,
+                                content: RefCell::new(o), 
+                            }
+                        )))
             }
         }
     }
@@ -159,7 +157,13 @@ impl< T: Mark+?Sized> PartialEq for Gc< T>  {
 #[cfg(feature="gc_debug")]
 impl< T: Mark+?Sized> fmt::Debug for Gc< T> {
     fn fmt(&self,  f: &mut fmt::Formatter) -> fmt::Result {
-            write!(f, "{:?} {:?}", self.color(), self.borrow())
+        unsafe {
+            if (**self.ptr).valid {
+                write!(f, "{:?} {:?}", self.color(), self.borrow())
+            } else {
+                write!(f, "printing <deallocated object>")
+            }
+        }
     }
 }
 
@@ -715,12 +719,10 @@ mod tests {
         }).unwrap();
         t.join().unwrap();
         _GC.with(|gc| {
-            println!("inz3 thread {:?}", thread::current());
             assert_eq!(gc.inner.borrow().whites.len(), 1);
         });
         gc::finalize();
         _GC.with(|gc| {
-            println!("inz3 thread {:?}", thread::current());
             assert_eq!(gc.inner.borrow().whites.len(), 0);
         });
     }

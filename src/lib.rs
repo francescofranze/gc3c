@@ -448,6 +448,7 @@ impl GcEnv {
     fn finalize(&self) {
         #[cfg(feature="gc_debug")]
         println!("dropping GcEnv");
+        self.sweep();
         
         let mut gc = self.inner.borrow_mut();
 

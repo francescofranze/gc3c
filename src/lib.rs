@@ -391,8 +391,7 @@ impl GcEnv {
     }
 
     pub fn pause(&self, b: bool) {
-        let mut gc = self.inner.borrow_mut();
-        gc.auto = !b;
+        self.inner.borrow_mut().auto = !b;
         self.auto_mark_sweep();
     }
 

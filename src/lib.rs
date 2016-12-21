@@ -356,13 +356,17 @@ impl GcEnv {
         }
     }
 
-    pub fn new_gc<T: 'static+Mark>(&self, obj: T) -> Gc<T> {
+    fn auto_mark_sweep(&self) {
         if self.inner.borrow().auto_mark() {
             self.mark(MAX_WHITES);
         }
         if self.inner.borrow().auto_sweep() {
             self.sweep();
         }
+    }
+
+    pub fn new_gc<T: 'static+Mark>(&self, obj: T) -> Gc<T> {
+        self.auto_mark_sweep();
         let gobj = Gc::<T>::new(obj, &self);
         let mut gc = self.inner.borrow_mut();
         gc.whites.push(gobj);
@@ -388,7 +392,8 @@ impl GcEnv {
 
     pub fn pause(&self, b: bool) {
         let mut gc = self.inner.borrow_mut();
-        gc.auto = b;
+        gc.auto = !b;
+        self.auto_mark_sweep();
     }
 
     pub fn mark(&self, mut steps: usize) {
@@ -483,6 +488,19 @@ pub mod gc {
             gc.new_ref(o, r);
         });
     }
+
+    pub fn mark(u: usize) {
+        _GC.with(|gc| {
+            gc.mark(u);
+        });
+    }
+
+    pub fn sweep() {
+        _GC.with(|gc| {
+            gc.sweep();
+        });
+    }
+
 
     pub fn pause(b: bool) {
         _GC.with(|gc| {

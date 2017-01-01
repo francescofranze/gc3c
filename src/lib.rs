@@ -20,6 +20,7 @@ use std::ptr;
 use std::marker::Sized;
 use std::mem;
 use std::raw;
+use std::any::Any;
 use std::mem::{size_of_val, align_of_val};
 
 extern crate alloc;
@@ -151,14 +152,14 @@ impl< T: Mark+?Sized> Gc< T> {
         }
     }    
 
-    pub unsafe fn borrow_as<'b, K: Mark>(this: &'b Gc<Mark>) -> Ref<'b, K> {
+    pub unsafe fn borrow_as<'b, K: Any>(this: &'b Gc<Mark>) -> Ref<'b, K> {
          Ref::map(this.borrow(), |t| {
                                 let to : raw::TraitObject = mem::transmute(t);
                                 let p = to.data as *const K;
                                 &*p
                                 })
     }
-    pub unsafe fn borrow_mut_as<'b, K: Mark>(this: &'b Gc<Mark>) -> RefMut<'b, K> {
+    pub unsafe fn borrow_mut_as<'b, K: Any>(this: &'b Gc<Mark>) -> RefMut<'b, K> {
          RefMut::map(this.borrow_mut(), |t| {
                                let to : raw::TraitObject = mem::transmute(t);
                                let p = to.data as *mut K;

@@ -1,6 +1,6 @@
 [package]
 name = "gc3c"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["francesco franze <francesco.franze@gmail.com>"]
 
 [features]

@@ -4,13 +4,11 @@
 
 #![feature(unsize)]
 #![feature(coerce_unsized)] 
-#![feature(shared)]
-#![feature(heap_api)]
 #![feature(alloc)]
+#![feature(allocator_api)]
 
 use std::marker::Unsize;
 use std::ops::CoerceUnsized;
-use std::ptr::Shared;
 use std::cell::RefCell;
 use std::cell::RefMut;
 use std::cell::Ref;
@@ -20,9 +18,13 @@ use std::marker::Sized;
 use std::mem;
 use std::mem::{size_of_val, align_of_val};
 
+extern crate core;
 extern crate alloc;
 
-use alloc::heap;
+use core::alloc::Alloc;
+use core::alloc::Layout;
+use core::alloc::Opaque;
+
 
 use std::fmt;
 
@@ -60,7 +62,7 @@ struct InGc<T: Mark+?Sized> {
 
 
 pub struct Gc<T: Mark+?Sized> {
-    ptr: Shared<InGc<T>>
+    ptr: * mut InGc<T>
 }
 
 impl< T: Mark+?Sized> Copy for Gc< T> {}
@@ -69,29 +71,31 @@ impl< T: Mark+?Sized> Copy for Gc< T> {}
 impl< T: Mark+?Sized>  Gc< T> {
     fn mark(&self, gc: &mut InGcEnv)  { // where Mark: Sized {
         unsafe {
-           (**self.ptr).content.borrow().mark(gc)
+           (*self.ptr).content.borrow().mark(gc)
         }
     }
     fn color(&self) -> GcColor {
         unsafe {
-            (**self.ptr).color
+            (*self.ptr).color
         }
     }
 
     fn set_color(&self, color: GcColor) {
         unsafe {
-            (**self.ptr).color = color;
+            (*self.ptr).color = color;
         }
     }
     fn forget(&self)  {
         #[cfg(feature="gc_debug")]
         println!("forgetting {:?}", self);
         unsafe {
-            (**self.ptr).valid = 0;
-            ptr::drop_in_place(&mut (**self.ptr).content);
-            heap::deallocate((*self.ptr) as *mut u8,
-                              size_of_val(&**self.ptr),
-                              align_of_val(&**self.ptr));
+            (*self.ptr).valid = 0;
+            ptr::drop_in_place(&mut (*self.ptr).content);
+            alloc::alloc::Global.dealloc(
+                           std::ptr::NonNull::new_unchecked(self.ptr as *mut Opaque),
+                           Layout::from_size_align_unchecked(
+                              size_of_val(&*self.ptr),
+                              align_of_val(&*self.ptr)));
         }
     }    
 
@@ -105,19 +109,17 @@ impl< T: 'static+Mark> Gc< T> {
                 GcColor::Black
             } else { 
                 GcColor::White };
-        unsafe {
-            Gc {
-                ptr: 
-                    Shared::new(
-                    Box::into_raw(
-                        Box::new(
-                            InGc {
-                                valid: GCVALID,
-                                color: white,
-                                content: RefCell::new(o), 
-                            }
-                        )))
-            }
+        Gc {
+            ptr: 
+                
+                Box::into_raw(
+                    Box::new(
+                        InGc {
+                            valid: GCVALID,
+                            color: white,
+                            content: RefCell::new(o), 
+                        }
+                    ))
         }
     }
     pub fn mark_grey(&self, gc: &mut InGcEnv) {
@@ -128,21 +130,21 @@ impl< T: 'static+Mark> Gc< T> {
 impl< T: Mark+?Sized> Gc< T> {
     pub fn borrow(&self) -> Ref<T> {
         unsafe {
-            assert!((**self.ptr).valid == GCVALID);
-            (**self.ptr).content.borrow()
+            assert!((*self.ptr).valid == GCVALID);
+            (*self.ptr).content.borrow()
         }
     }    
     pub fn borrow_mut(& self) -> RefMut<T> {
         unsafe {
-            assert!((**self.ptr).valid == GCVALID);
-            (**self.ptr).content.borrow_mut()
+            assert!((*self.ptr).valid == GCVALID);
+            (*self.ptr).content.borrow_mut()
         }
     }    
     
     pub fn try_borrow(&self) -> Option<Ref<T>> {
         unsafe {
-            if (**self.ptr).valid == GCVALID {
-                Some((**self.ptr).content.borrow())
+            if (*self.ptr).valid == GCVALID {
+                Some((*self.ptr).content.borrow())
             } else {
                 None
             }
@@ -161,7 +163,7 @@ impl< T: Mark+?Sized> Clone for Gc< T>  {
 
 impl< T: Mark+?Sized> PartialEq for Gc< T>  {
     fn eq(&self, obj2: &Gc< T>) -> bool {
-        *self.ptr == *obj2.ptr
+        (self.ptr as *const u8) == (obj2.ptr as *const u8)
     }
 }
 
@@ -170,7 +172,7 @@ impl< T: Mark+?Sized> PartialEq for Gc< T>  {
 impl< T: Mark+?Sized> fmt::Debug for Gc< T> {
     fn fmt(&self,  f: &mut fmt::Formatter) -> fmt::Result {
         unsafe {
-            if (**self.ptr).valid == GCVALID {
+            if (*self.ptr).valid == GCVALID {
                 write!(f, "{:?} {:?}", self.color(), self.borrow())
             } else {
                 write!(f, "<deallocated object>")

@@ -1,4 +1,4 @@
-[root]
+[[package]]
 name = "gc3c"
 version = "0.1.0"
 

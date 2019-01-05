@@ -23,7 +23,6 @@ extern crate alloc;
 
 use core::alloc::Alloc;
 use core::alloc::Layout;
-use core::alloc::Opaque;
 
 
 use std::fmt;
@@ -92,7 +91,7 @@ impl< T: Mark+?Sized>  Gc< T> {
             (*self.ptr).valid = 0;
             ptr::drop_in_place(&mut (*self.ptr).content);
             alloc::alloc::Global.dealloc(
-                           std::ptr::NonNull::new_unchecked(self.ptr as *mut Opaque),
+                           std::ptr::NonNull::new_unchecked(self.ptr as *mut u8),
                            Layout::from_size_align_unchecked(
                               size_of_val(&*self.ptr),
                               align_of_val(&*self.ptr)));

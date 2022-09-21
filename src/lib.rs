@@ -4,8 +4,6 @@
 
 #![feature(unsize)]
 #![feature(coerce_unsized)] 
-#![feature(alloc)]
-#![feature(allocator_api)]
 
 use std::marker::Unsize;
 use std::ops::CoerceUnsized;
@@ -17,12 +15,9 @@ use std::ptr;
 use std::marker::Sized;
 use std::mem;
 use std::mem::{size_of_val, align_of_val};
+use std::alloc::{self, Layout};
 
-extern crate core;
-extern crate alloc;
 
-use core::alloc::Alloc;
-use core::alloc::Layout;
 
 
 use std::fmt;
@@ -31,43 +26,43 @@ const GCVALID: u16 = 0xF123;
 
 #[derive(Eq, PartialEq, Copy, Clone, Debug)]
 enum GcColor {
-        Unbound,
-        Grey,
-        White,
-        Black
+    Unbound,
+    Grey,
+    White,
+    Black
 }
 
 
 #[cfg(feature="gc_debug")]
 pub trait Mark: fmt::Debug {
-    fn mark(&self, &mut InGcEnv) { }
+    fn mark(&self, _: &mut InGcEnv) { }
 }
 
 
 #[cfg(not(feature="gc_debug"))]
 pub trait Mark {
-    fn mark(&self, &mut InGcEnv)  { } 
+    fn mark(&self, _: &mut InGcEnv)  { } 
 }
 
 
 
 impl< T: Mark+?Sized + Unsize<U>, U: Mark+?Sized> CoerceUnsized<Gc< U>> for Gc< T> {}
 
-struct InGc<T: Mark+?Sized> {
+struct InGc<T: Mark + ?Sized> {
     valid: u16,
     color: GcColor,
     content: RefCell<T>,
 }
 
 
-pub struct Gc<T: Mark+?Sized> {
+pub struct Gc<T: Mark + ?Sized> {
     ptr: * mut InGc<T>
 }
 
-impl< T: Mark+?Sized> Copy for Gc< T> {}
+impl< T: Mark + ?Sized> Copy for Gc< T> {}
 
 
-impl< T: Mark+?Sized>  Gc< T> {
+impl< T: Mark + ?Sized>   Gc< T> {
     fn mark(&self, gc: &mut InGcEnv)  { // where Mark: Sized {
         unsafe {
            (*self.ptr).content.borrow().mark(gc)
@@ -90,8 +85,8 @@ impl< T: Mark+?Sized>  Gc< T> {
         unsafe {
             (*self.ptr).valid = 0;
             ptr::drop_in_place(&mut (*self.ptr).content);
-            alloc::alloc::Global.dealloc(
-                           std::ptr::NonNull::new_unchecked(self.ptr as *mut u8),
+            alloc::dealloc(
+                           self.ptr as *mut u8,
                            Layout::from_size_align_unchecked(
                               size_of_val(&*self.ptr),
                               align_of_val(&*self.ptr)));
@@ -102,7 +97,7 @@ impl< T: Mark+?Sized>  Gc< T> {
 
 
 
-impl< T: 'static+Mark> Gc< T> {
+impl< T: 'static+Mark> Gc< T> where T: Mark {
      fn new(o: T, gc: &GcEnv) -> Gc<T>  {
         let white = if gc.inner.borrow().white_is_black { 
                 GcColor::Black
@@ -126,7 +121,7 @@ impl< T: 'static+Mark> Gc< T> {
     }
 }
 
-impl< T: Mark+?Sized> Gc< T> {
+impl< T: Mark +?Sized> Gc< T> {
     pub fn borrow(&self) -> Ref<T> {
         unsafe {
             assert!((*self.ptr).valid == GCVALID);
@@ -153,14 +148,14 @@ impl< T: Mark+?Sized> Gc< T> {
 }
 
 
-impl< T: Mark+?Sized> Clone for Gc< T>  {
+impl< T: Mark +?Sized> Clone for Gc< T>  {
     fn clone(&self) -> Self {
         Gc { ptr:  self.ptr, }
     }
 }
 
 
-impl< T: Mark+?Sized> PartialEq for Gc< T>  {
+impl< T: Mark +?Sized> PartialEq for Gc< T>  {
     fn eq(&self, obj2: &Gc< T>) -> bool {
         (self.ptr as *const u8) == (obj2.ptr as *const u8)
     }
@@ -168,7 +163,7 @@ impl< T: Mark+?Sized> PartialEq for Gc< T>  {
 
 
 #[cfg(feature="gc_debug")]
-impl< T: Mark+?Sized> fmt::Debug for Gc< T> {
+impl< T: Mark +?Sized> fmt::Debug for Gc< T> {
     fn fmt(&self,  f: &mut fmt::Formatter) -> fmt::Result {
         unsafe {
             if (*self.ptr).valid == GCVALID {
@@ -182,7 +177,7 @@ impl< T: Mark+?Sized> fmt::Debug for Gc< T> {
 
 
 #[cfg(not(feature="gc_debug"))]
-impl< T: fmt::Debug+Mark+?Sized> fmt::Debug for Gc< T> {
+impl< T: fmt::Debug+Mark +?Sized> fmt::Debug for Gc< T> {
     fn fmt(&self,  f: &mut fmt::Formatter) -> fmt::Result {
             write!(f, "{:?}", self.borrow())
     }
@@ -193,10 +188,10 @@ impl< T: fmt::Debug+Mark+?Sized> fmt::Debug for Gc< T> {
 const MAX_WHITES: usize = 100;
 
 pub struct InGcEnv {
-    whites: Vec<Gc<Mark>>,
-    greys: Vec<Gc<Mark>>,
-    blacks: Vec<Gc<Mark>>,
-    roots: Vec<Gc<Mark>>,
+    whites: Vec<Gc<dyn Mark>>,
+    greys: Vec<Gc<dyn Mark>>,
+    blacks: Vec<Gc<dyn Mark>>,
+    roots: Vec<Gc<dyn Mark>>,
     white_is_black: bool,
     auto: bool,
 }
@@ -226,7 +221,7 @@ impl InGcEnv {
         }
     }
 
-    fn movec(&mut self, obj: Gc<Mark>, color: GcColor) {
+    fn movec(&mut self, obj: Gc<dyn Mark>, color: GcColor) {
         if obj.color() != color {
             if obj.color() != GcColor::Unbound {
                 self.remove(&obj);
@@ -234,7 +229,7 @@ impl InGcEnv {
             self.add(obj, color);
         } 
     } 
-    fn remove(&mut self, obj: &Gc<Mark>) {
+    fn remove(&mut self, obj: &Gc<dyn Mark>) {
         let color = obj.color();
         obj.set_color(GcColor::Unbound);
         match color {
@@ -265,7 +260,7 @@ impl InGcEnv {
         }
     }
 
-    fn add(&mut self, obj: Gc<Mark>, color: GcColor) {
+    fn add(&mut self, obj: Gc<dyn Mark>, color: GcColor) {
         obj.set_color(color);
         match color {
             GcColor::Unbound => { unreachable!(); },
@@ -293,19 +288,21 @@ impl InGcEnv {
         if cfg!(feature="gc_debug") {    
             println!("swap white and black");
         }
-        let oldblacks = mem::replace(&mut (self.blacks), vec![]);
-        let oldwhites = mem::replace(&mut (self.whites), oldblacks);
-        mem::replace(&mut (self.blacks), oldwhites);
+        //let oldblacks = mem::replace(&mut (self.blacks), vec![]);
+        //let oldwhites = mem::replace(&mut (self.whites), oldblacks);
+        //mem::replace(&mut (self.blacks), oldwhites);
+        mem::swap(&mut self.blacks, &mut self.whites);
+         
         self.white_is_black = !self.white_is_black;
     }
 
-    fn mark_1(&mut self, obj: Gc<Mark>) {
+    fn mark_1(&mut self, obj: Gc<dyn Mark>) {
         let black = if self.white_is_black { GcColor::White} else { GcColor::Black };
         self.movec(obj, black);
         obj.mark(self);
     }
     
-    fn mark_grey(&mut self, obj: Gc<Mark>) {
+    fn mark_grey(&mut self, obj: Gc<dyn Mark>) {
          match obj.color() {
             GcColor::Unbound => { unreachable!(); },
             GcColor::Grey => {   }
@@ -355,7 +352,7 @@ impl GcEnv {
         }
     }
 
-    pub fn add_root(&self, obj: Gc<Mark>) {
+    pub fn add_root(&self, obj: Gc<dyn Mark>) {
         let mut gc = self.inner.borrow_mut();
         
         if !gc.roots.contains(&obj) {
@@ -364,12 +361,12 @@ impl GcEnv {
         }
     }
 
-    pub fn rm_root(&self, obj: Gc<Mark>) {
+    pub fn rm_root(&self, obj: Gc<dyn Mark>) {
         let mut gc = self.inner.borrow_mut();
         
         if gc.roots.contains(&obj) {
             let i = gc.roots.iter().position(|e| { *e==obj }).unwrap(); 
-            gc.blacks.remove(i);
+            gc.roots.remove(i);
         }
     }
 
@@ -394,7 +391,7 @@ impl GcEnv {
     /// o: referring object
     /// robj: referred object
     /// if o is marked and it adds a new reference it is remarked as grey
-    pub fn new_ref(&self, o: Gc<Mark>, robj: Gc<Mark>) {
+    pub fn new_ref(&self, o: Gc<dyn Mark>, robj: Gc<dyn Mark>) {
         let mut gc = self.inner.borrow_mut();
         if gc.white_is_black {
             if o.color() == GcColor::White && robj.color() == GcColor::Black {
@@ -450,7 +447,7 @@ impl GcEnv {
         }
         gc.swap_white_and_black();
 
-        let mut it = Vec::<Gc<Mark>>::new();
+        let mut it = Vec::<Gc<dyn Mark>>::new();
         for obj in gc.roots.iter() {
             #[cfg(feature="gc_debug")]
             println!("marking root {:?}", obj);
@@ -500,7 +497,7 @@ pub mod gc {
         }) 
     }
 
-    pub fn new_ref(o: Gc<Mark>, r: Gc<Mark>) {
+    pub fn new_ref(o: Gc<dyn Mark>, r: Gc<dyn Mark>) {
         _GC.with(|gc| {
             gc.new_ref(o, r);
         });
@@ -525,13 +522,13 @@ pub mod gc {
         });
     }
 
-    pub fn add_root(o: Gc<Mark>) {
+    pub fn add_root(o: Gc<dyn Mark>) {
         _GC.with(|gc| {
             gc.add_root(o);
         });
     }
 
-    pub fn rm_root(o: Gc<Mark>) {
+    pub fn rm_root(o: Gc<dyn Mark>) {
         _GC.with(|gc| {
             gc.rm_root(o);
         });
@@ -583,7 +580,7 @@ mod tests {
     
     
     // multi level struct
-    #[derive(Debug)]
+    // #[derive(Debug)]
     struct B {
         a: Gc<A>, // garbage collected
         i: u8,
@@ -595,27 +592,28 @@ mod tests {
         // internal references
         fn mark(&self, gc: &mut InGcEnv) {
             self.a.mark_grey(gc);    
+            _ = self.i;
         }
     }
 
-    fn assert_is_white(gc: &GcEnv, o: Gc<Mark>) {
+    fn assert_is_white(gc: &GcEnv, o: Gc<dyn Mark>) {
         let white = if gc.inner.borrow().white_is_black { GcColor::Black} else { GcColor::White };
         assert_eq!(o.color(), white);
         assert!(gc.inner.borrow().whites.contains(&o));
     }
 
-    fn assert_is_black(gc: &GcEnv, o: Gc<Mark>) {
+    fn assert_is_black(gc: &GcEnv, o: Gc<dyn Mark>) {
         let black = if gc.inner.borrow().white_is_black { GcColor::White } else { GcColor::Black };
         assert_eq!(o.color(), black);
         assert!(gc.inner.borrow().blacks.contains(&o));
     }
 
-    fn assert_is_grey(gc: &GcEnv, o: Gc<Mark>) {
+    fn assert_is_grey(gc: &GcEnv, o: Gc<dyn Mark>) {
         assert_eq!(o.color(), GcColor::Grey);
         assert!(gc.inner.borrow().greys.contains(&o));
     }
     
-    fn assert_released(gc: &GcEnv, o: Gc<Mark>) {
+    fn assert_released(gc: &GcEnv, o: Gc<dyn Mark>) {
         assert!(!gc.inner.borrow().whites.contains(&o));
         assert!(!gc.inner.borrow().blacks.contains(&o));
         assert!(!gc.inner.borrow().greys.contains(&o));

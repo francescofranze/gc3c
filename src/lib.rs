@@ -553,7 +553,6 @@ mod tests {
     impl Mark for A {}
     
     
-    
     #[test]
     fn basic_test() {
         // initialize the garbage collector
@@ -576,8 +575,8 @@ mod tests {
         assert_eq!(2, b.borrow().i);
     
         assert_eq!(a.color(), ::GcColor::White);
+        gc.finalize();
     }
-    
     
     // multi level struct
     // #[derive(Debug)]
@@ -707,6 +706,17 @@ mod tests {
         gc.new_ref(b, c); 
         assert_is_grey(&gc, b);
         assert_is_white(&gc, c);
+        assert_is_black(&gc, a);
+        gc.mark(100);
+        gc.sweep();
+        assert_is_grey(&gc, b);
+        assert_is_white(&gc, c);
+        assert_is_white(&gc, a);
+        gc.mark(100);
+        gc.sweep();
+        assert_is_grey(&gc, b);
+        assert_is_white(&gc, c);
+        assert_released(&gc, a);
         gc.finalize();
     }
 

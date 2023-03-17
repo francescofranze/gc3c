@@ -717,6 +717,17 @@ mod tests {
         assert_is_grey(&gc, b);
         assert_is_white(&gc, c);
         assert_released(&gc, a);
+
+        gc.rm_root(b);
+        gc.mark(100);
+        gc.sweep();
+        assert_is_white(&gc, b);
+        assert_is_white(&gc, c);
+        gc.mark(100);
+        gc.sweep();
+        assert_released(&gc, b);
+        assert_released(&gc, c);
+
         gc.finalize();
     }
 
